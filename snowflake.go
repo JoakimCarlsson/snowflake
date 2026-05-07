@@ -1,15 +1,14 @@
 package snowflake
 
 import (
-	"fmt"
 	"os"
 	"strconv"
-	"sync/atomic"
+	"sync"
 	"time"
 )
 
 const (
-	epoch          = int64(1735689600000) // Jan 1, 2025
+	epoch          = int64(1735689600000)
 	machineIDBits  = uint8(10)
 	sequenceBits   = uint8(12)
 	maxMachineID   = int64(-1) ^ (int64(-1) << machineIDBits)
@@ -19,8 +18,9 @@ const (
 )
 
 var (
+	mu            sync.Mutex
 	lastTimestamp int64
-	sequence      uint32
+	sequence      int64
 	machineID     int64
 )
 
@@ -53,31 +53,24 @@ func waitNextMillis(last int64) int64 {
 }
 
 func Generate() int64 {
-	last := atomic.LoadInt64(&lastTimestamp)
-	ts := currentTimestamp()
+	mu.Lock()
+	defer mu.Unlock()
 
-	if ts < last {
-		panic(fmt.Sprintf("clock moved backwards: %d ms", last-ts))
-	}
+	ts := max(currentTimestamp(), lastTimestamp)
 
-	if ts == last {
-		seq := atomic.AddUint32(&sequence, 1) & uint32(maxSequence)
-		if seq == 0 {
-			ts = waitNextMillis(last)
-			atomic.StoreUint32(&sequence, 0)
-			atomic.StoreInt64(&lastTimestamp, ts)
+	if ts == lastTimestamp {
+		sequence = (sequence + 1) & maxSequence
+		if sequence == 0 {
+			ts = waitNextMillis(lastTimestamp)
 		}
 	} else {
-		atomic.StoreUint32(&sequence, 0)
-		atomic.StoreInt64(&lastTimestamp, ts)
+		sequence = 0
 	}
+	lastTimestamp = ts
 
-	seq := atomic.LoadUint32(&sequence)
-	id := ((ts - epoch) << timestampShift) |
+	return ((ts - epoch) << timestampShift) |
 		(machineID << machineIDShift) |
-		int64(seq)
-
-	return id
+		sequence
 }
 
 func Parse(id int64) (timestamp int64, machineIDParsed int64, sequenceParsed int64) {
